@@ -141,11 +141,6 @@ class PlacementController(object):
         
         # --- Camera parameters
         self.CamParam = CameraParams()
-        # --- Camera pose
-        #TODO: Substitute transform in here
-        R_Jcam = np.array([[0.9995,-0.0187,-0.0263],[-0.0191,-0.9997,-0.0135],[-0.0261,0.0140,-0.9996]])
-        r_cam = rox.hat(np.array([0.0707, 1.1395, 0.2747]))#rox.hat(np.array([- 0.2811, -1.1397,0.0335]))#rox.hat(np.array([- 0.2811, 1.1397,0.0335]))
-        self.R_Jcam = np.linalg.inv(np.vstack([ np.hstack([R_Jcam,np.zeros([3,3])]), np.hstack([np.dot(r_cam,R_Jcam),R_Jcam]) ]))
         self.dt = None
         self.iteration=0
         
@@ -257,6 +252,8 @@ class PlacementController(object):
     def get_pose(self, board, corners, ids, CamParam):
         #Define object and image points of both tags        
         objPoints, imgPoints 	=	aruco.getBoardObjectAndImagePoints(board, corners, ids)
+        if (objPoints is None):
+            raise Exception("Could not detect markers")
         objPoints = objPoints.reshape([objPoints.shape[0],3])
         imgPoints = imgPoints.reshape([imgPoints.shape[0],2])
         
@@ -621,7 +618,20 @@ class PlacementController(object):
                 du, dv, J_cam, delta_UV_all = self.image_jacobian_gen(self.result, corners, ids, self.CamParam, self.board_ground,self.board_panel,self.id_start_ground, 
                                                                       self.id_board_row_ground*self.id_board_col_ground,self.tag_ground_size,loaded_object_points_ground_in_panel_system,'Cam0')
        
-                dx = QP_Cam(np.dot(J_cam, self.R_Jcam),self.Ki*delta_UV_all)
+                # --- Camera pose
+                
+                T_cam = self.listener.lookupTransform("world", "gripper_camera_2", rospy.Time(0))
+                
+                #R_Jcam = np.array([[0.9995,-0.0187,-0.0263],[-0.0191,-0.9997,-0.0135],[-0.0261,0.0140,-0.9996]])
+                #r_cam = rox.hat(np.array([0.0707, 1.1395, 0.2747]))#rox.hat(np.array([- 0.2811, -1.1397,0.0335]))#rox.hat(np.array([- 0.2811, 1.1397,0.0335]))
+                
+                R_Jcam = T_cam.R
+                r_cam = rox.hat(T_cam.p)
+                
+                R_Jcam = np.linalg.inv(np.vstack([ np.hstack([R_Jcam,np.zeros([3,3])]), np.hstack([np.dot(r_cam,R_Jcam),R_Jcam]) ]))
+        
+       
+                dx = QP_Cam(np.dot(J_cam, R_Jcam),self.Ki*delta_UV_all)
                 dx = dx.reshape([6,1])
        
                 # Compliance Force Control
