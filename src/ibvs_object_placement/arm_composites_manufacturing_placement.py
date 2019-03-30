@@ -137,7 +137,7 @@ class PlacementController(object):
         # --- Subscribe to Gripper camera node for image acquisition
         #TODO: Take in camera names and make subscribers and triggers accordingly
         self.ros_gripper_2_img_sub = rospy.Subscriber('/gripper_camera_2/image', Image, self.object_commander.ros_raw_gripper_2_image_cb)
-        self.ros_gripper_2_trigger = rospy.ServiceProxy('/gripper_camera_2/trigger', Trigger)
+        self.ros_gripper_2_trigger = rospy.ServiceProxy('/gripper_camera_2/camera_trigger', Trigger)
         
         # --- Camera parameters
         self.CamParam = CameraParams()
@@ -425,8 +425,9 @@ class PlacementController(object):
         self.controller_commander.set_controller_mode(self.controller_commander.MODE_AUTO_TRAJECTORY, 0.7, [])
          
         tvec_err = np.array([1000,1000,1000])
+        rvec_err = np.array([1000,1000,1000])
 
-        while(np.linalg.norm(tvec_err) > 0.06):
+        while(np.linalg.norm(tvec_err) > 0.06 or np.linalg.norm(rvec_err) > np.deg2rad(0.5)):
             
             self.take_image() 
             #Detect tag corners in aqcuired image using aruco
@@ -442,18 +443,30 @@ class PlacementController(object):
             rospy.loginfo(str(self.CamParam.distCoeff))
             rospy.loginfo(str(self.CamParam.camMatrix))
             observed_tvec_difference = tvec_ground-tvec_panel
-            observed_rvec_difference = rvec_ground-rvec_panel
+            R_ground, _ = cv2.Rodrigues(rvec_ground)
+            R_panel, _ = cv2.Rodrigues(rvec_panel)
+            observed_R_difference = R_ground.transpose() * R_panel
 
-            tvec_err = self.loaded_tvec_difference_stage1-observed_tvec_difference
-            rvec_err = self.loaded_rvec_difference_stage1-observed_rvec_difference 
+            tvec_err1 = self.loaded_tvec_difference_stage1-observed_tvec_difference
+            #rvec_err1 = self.loaded_rvec_difference_stage1-observed_rvec_difference
+            rvec_err1 = -np.array(rox.R2rpy(observed_R_difference)) 
+            
+            world_to_camera_tf=self.listener.lookupTransform("world", "gripper_camera_2", rospy.Time(0))
+            tvec_err = world_to_camera_tf.R.dot(tvec_err1).reshape((3,))
+            rvec_err = self.normalize_rvec(world_to_camera_tf.R.dot(rvec_err1))
+
+            tvec_err = np.clip(tvec_err, -0.2, 0.2)
+            rvec_err = np.clip(rvec_err, -np.deg2rad(5), np.deg2rad(5))
+
             rospy.loginfo("tvec difference: %f, %f, %f",tvec_err[0],tvec_err[1],tvec_err[2])
             rospy.loginfo("rvec difference: %f, %f, %f",rvec_err[0],rvec_err[1],rvec_err[2])
+
 
             if(not with_lower):
                 tvec_err[2] = 0
             else:
-                tvec_err[2] -= 0.04               
-            dx = np.array([0,0,0, -tvec_err[0], tvec_err[1],tvec_err[2]])*0.7
+                tvec_err[2] -= 0.04            
+            dx = -np.concatenate((rvec_err, tvec_err))*0.7
             #dx = np.array([rvec_err[0],rvec_err[1],rvec_err[2], -tvec_err[0], tvec_err[1],tvec_err[2]])*0.7
             # Adjustment
             rospy.loginfo("PBVS to initial Position ====================")
@@ -814,7 +827,17 @@ class PlacementController(object):
         self.goal_handle.set_succeeded(None)
             
             
-            
+    def normalize_rvec(self, rvec):
+        
+        rvec_mag = np.linalg.norm(rvec)
+        if rvec_mag < 10 * 1e-6:
+            return rvec
+        
+        rvec_dir = rvec/rvec_mag
+        
+        rvec_mag2 = ((rvec_mag + np.pi) % (np.pi*2)) - np.pi
+        
+        return rvec_dir.dot(rvec_mag2) 
     
 
 def main():
